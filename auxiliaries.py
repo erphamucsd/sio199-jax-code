@@ -8,7 +8,7 @@ import jax.numpy as np
 
 from params import ix, il
 
-# Replacement for types.py
+# Replacement for types file
 p = np.float64
 
 # Physical variables shared among all physics schemes
