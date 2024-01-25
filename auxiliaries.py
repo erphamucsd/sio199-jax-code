@@ -31,23 +31,3 @@ vstr = np.zeros((ix, il, 3), dtype=p) # V-stress
 shf = np.zeros((ix, il, 3), dtype=p) # Sensible heat flux
 evap = np.zeros((ix, il, 3), dtype=p) # Evaporation [g/(m^2 s)]
 hfluxn = np.zeros((ix, il, 3), dtype=p) # Net heat flux into surface
-
-'''NOT SURE ABOUT THIS SECTION.'''
-# Make module variables mutable for updates
-precnv = jax.tree_util.tree_map(jax.tree_util.PartialMutableLeaf, precnv)
-precls = jax.tree_util.tree_map(jax.tree_util.PartialMutableLeaf, precls)
-snowcv = jax.tree_util.tree_map(jax.tree_util.PartialMutableLeaf, snowcv)
-snowls = jax.tree_util.tree_map(jax.tree_util.PartialMutableLeaf, snowls)
-cbmf = jax.tree_util.tree_map(jax.tree_util.PartialMutableLeaf, cbmf)
-tsr = jax.tree_util.tree_map(jax.tree_util.PartialMutableLeaf, tsr)
-ssrd = jax.tree_util.tree_map(jax.tree_util.PartialMutableLeaf, ssrd)
-ssr = jax.tree_util.tree_map(jax.tree_util.PartialMutableLeaf, ssr)
-slrd = jax.tree_util.tree_map(jax.tree_util.PartialMutableLeaf, slrd)
-slr = jax.tree_util.tree_map(jax.tree_util.PartialMutableLeaf, slr)
-olr = jax.tree_util.tree_map(jax.tree_util.PartialMutableLeaf, olr)
-slru = jax.tree_util.tree_map(jax.tree_util.PartialMutableLeaf, slru)
-ustr = jax.tree_util.tree_map(jax.tree_util.PartialMutableLeaf, ustr)
-vstr = jax.tree_util.tree_map(jax.tree_util.PartialMutableLeaf, vstr)
-shf = jax.tree_util.tree_map(jax.tree_util.PartialMutableLeaf, shf)
-evap = jax.tree_util.tree_map(jax.tree_util.PartialMutableLeaf, evap)
-hfluxn = jax.tree_util.tree_map(jax.tree_util.PartialMutableLeaf, hfluxn)
