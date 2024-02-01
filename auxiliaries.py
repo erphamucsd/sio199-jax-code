@@ -7,9 +7,7 @@ import jax
 import jax.numpy as np
 
 from params import ix, il
-
-# Replacement for types file
-p = np.float64
+from speedyf90_types import p
 
 # Physical variables shared among all physics schemes
 precnv = np.zeros((ix, il), dtype=p) # Convective precipitation [g/(m^2 s)], total
