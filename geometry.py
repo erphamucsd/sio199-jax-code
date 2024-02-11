@@ -1,3 +1,8 @@
+'''
+Date: 2/1/2024
+For storing all variables related to the model's grid space.
+'''
+
 import jax.numpy as np
 from jax import jit
 

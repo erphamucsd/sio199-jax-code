@@ -2,6 +2,7 @@
 Date: 1/25/2024
 For storing and initializing physical constants.
 '''
+
 import jax.numpy as np
 
 from params import kx
