@@ -5,6 +5,7 @@ version of the Tiedke (1993) mass-flux convection scheme.
 '''
 
 import jax.numpy as jnp
+import jax
 from jax import lax
 
 from speedyf90_types import p
@@ -24,7 +25,7 @@ def get_convection_tendencies(psa, se, qa, qsat, itop, cbmf, precnv, dfse, dfqa)
 
     ix, il, kx = psa.shape  # Assuming psa has shape (ix, il, kx)
 
-    # Initialization
+    # Initialization of output and workspace arrays
     nl1 = kx - 1
     nlp = kx + 1
     fqmax = 5.0
@@ -43,7 +44,7 @@ def get_convection_tendencies(psa, se, qa, qsat, itop, cbmf, precnv, dfse, dfqa)
     sentr = entmax / jnp.sum(entr[:, :, 1:nl1], axis=-1)
     entr = jnp.where(jnp.arange(1, kx-1)[:, None] < nl1, entr * sentr[:, None], entr)
 
-    # Check conditions for convection
+    # Check of conditions for convection
     qdif = diagnose_convection(psa, se, qa, qsat)
 
     # Create index arrays
@@ -51,6 +52,7 @@ def get_convection_tendencies(psa, se, qa, qsat, itop, cbmf, precnv, dfse, dfqa)
     j_indices = jnp.arange(il)[None, :]
 
     # Define functions for operations within the loop
+    # Convection over selected grid-points
     def convection_loop(i, j, args):
         itop_ij = itop[i, j]
         cbmf_ij = cbmf[i, j]
@@ -138,3 +140,67 @@ def get_convection_tendencies(psa, se, qa, qsat, itop, cbmf, precnv, dfse, dfqa)
     dfse, dfqa, precnv = lax.fori_loop(ix, lambda i, args: lax.fori_loop(il, lambda j, args: convection_loop(i, j, args), args), (dfse, dfqa, precnv))
 
     return dfse, dfqa
+
+def diagnose_convection(psa, se, qa, qsat):
+    from physical_constants import alhc, wvi
+    # Constants
+    ix, il, kx = psa.shape
+
+    # Initialize arrays
+    itop = jnp.full((ix, il), kx+1, dtype=jnp.int32)
+    qdif = jnp.zeros((ix, il), dtype=psa.dtype)
+
+    # Saturation moist static energy
+    mss = jnp.maximum.outer(se[..., kx-1] + alhc * qa[..., kx-1], jnp.max(se[..., :-1] + alhc * qsat[..., :-1], axis=-1))
+
+    rlhc = 1.0 / alhc
+
+    # Find indices where pressure is greater than psmin
+    idx = jnp.where(psa > psmin)
+
+    def loop_body(ij, itop, qdif):
+        i, j = ij
+
+        mse0 = se[i, j, kx-1] + alhc * qa[i, j, kx-1]
+        mse1 = se[i, j, kx-2] + alhc * qa[i, j, kx-2]
+        mse1 = jnp.minimum(mse0, mse1)
+
+        mss0 = jnp.maximum(mse0, mss[i, j, kx-1])
+
+        ktop1 = kx
+        ktop2 = kx
+
+        def cond_body(k, state):
+            mss2, ktop1, ktop2 = state
+            mss2 = mss[i, j, k] + wvi[k, 1] * (mss2 - mss[i, j, k])
+            
+            ktop1 = lax.cond(mss0 > mss2, lambda _: k, lambda _: ktop1, None)
+            ktop2 = lax.cond(mse1 > mss2, lambda _: k, lambda _: ktop2, None)
+            
+            return mss2, ktop1, ktop2
+
+        _, ktop1, ktop2 = lax.scan(cond_body, kx-4, (mss[i, j, kx-2], ktop1, ktop2))
+
+        def check3(ktop1, ktop2, itop, qdif):
+            qthr0 = rhbl * qsat[i, j, kx-1]
+            qthr1 = rhbl * qsat[i, j, kx-2]
+            lqthr = (qa[i, j, kx-1] > qthr0) & (qa[i, j, kx-2] > qthr1)
+
+            if ktop2 < kx:
+                itop = jax.ops.index_update(itop, (i, j), ktop1)
+                qdif = jax.ops.index_update(qdif, (i, j), jnp.maximum(qa[i, j, kx-1] - qthr0, (mse0 - mss[i, j, ktop2]) * rlhc))
+            elif lqthr:
+                itop = jax.ops.index_update(itop, (i, j), ktop1)
+                qdif = jax.ops.index_update(qdif, (i, j), qa[i, j, kx-1] - qthr0)
+
+            return itop, qdif
+
+        itop, qdif = lax.cond(ktop1 < kx, lambda _: check3(ktop1, ktop2, itop, qdif), lambda _: (itop, qdif), None)
+
+        return itop, qdif
+
+    # Loop over valid indices
+    itop, qdif = lax.scan(loop_body, idx, (itop, qdif))
+
+    return itop, qdif
+
