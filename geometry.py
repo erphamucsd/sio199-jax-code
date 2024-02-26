@@ -3,40 +3,39 @@ Date: 2/1/2024
 For storing all variables related to the model's grid space.
 '''
 
-import jax.numpy as np
+import jax.numpy as jnp
 from jax import jit
 
 from params import kx, il, iy
 from physical_constants import akap, omega
 
 # Vertical level parameters
-hsg = np.zeros(kx + 1) # Half sigma levels
-dhs = np.zeros(kx) # Sigma level thicknesses
-fsg = np.zeros(kx) # Full sigma levels
-dhsr = np.zeros(kx) # 1/(2*sigma level thicknesses)
-fsgr = np.zeros(kx) # akap/(2*full sigma levels)
+dhs = jnp.zeros(kx) # Sigma level thicknesses
+fsg = jnp.zeros(kx) # Full sigma levels
+dhsr = jnp.zeros(kx) # 1/(2*sigma level thicknesses)
+fsgr = jnp.zeros(kx) # akap/(2*full sigma levels)
 
 # Functions of latitude and longitude
-radang = np.zeros(il) # Latitudes in radians
-coriol = np.zeros(il) # Coriolis parameter as a function of latitude
-sia = np.zeros(il) # sine(latitude)
-coa = np.zeros(il) # cosine(latitude)
-sia_half = np.zeros(iy) # sine(latitude) over one hemisphere only
-coa_half = np.zeros(iy) # cosine(latitude) over one hemisphere only
-cosg = np.zeros(il) # Same as coa (TODO: remove)
-cosgr = np.zeros(il) # 1/coa
-cosgr2 = np.zeros(il) # 1/coa^2
+radang = jnp.zeros(il) # Latitudes in radians
+coriol = jnp.zeros(il) # Coriolis parameter as a function of latitude
+sia = jnp.zeros(il) # sine(latitude)
+coa = jnp.zeros(il) # cosine(latitude)
+sia_half = jnp.zeros(iy) # sine(latitude) over one hemisphere only
+coa_half = jnp.zeros(iy) # cosine(latitude) over one hemisphere only
+cosg = jnp.zeros(il) # Same as coa (TODO: remove)
+cosgr = jnp.zeros(il) # 1/coa
+cosgr2 = jnp.zeros(il) # 1/coa^2
 
 @jit
-def initialize_geometry(hsg, dhs, fsg, dhsr, fsgr, radang, coriol, sia, coa, sia_half, coa_half, cosg, cosgr, cosgr2):
+def initialize_geometry():
 
     # Definition of model levels
     if kx == 5:
-        hsg[:6] = np.array([0.000, 0.150, 0.350, 0.650, 0.900, 1.000])
+        hsg = jnp.array([0.000, 0.150, 0.350, 0.650, 0.900, 1.000])
     elif kx == 7:
-        hsg[:8] = np.array([0.020, 0.140, 0.260, 0.420, 0.600, 0.770, 0.900, 1.000])
+        hsg = jnp.array([0.020, 0.140, 0.260, 0.420, 0.600, 0.770, 0.900, 1.000])
     elif kx == 8:
-        hsg[:9] = np.array([0.000, 0.050, 0.140, 0.260, 0.420, 0.600, 0.770, 0.900, 1.000])
+        hsg = jnp.array([0.000, 0.050, 0.140, 0.260, 0.420, 0.600, 0.770, 0.900, 1.000])
 
     '''
     # Layer thicknesses and full (u,v,T) levels
@@ -79,20 +78,19 @@ def initialize_geometry(hsg, dhs, fsg, dhsr, fsgr, radang, coriol, sia, coa, sia
 
     # Latitudes and functions of latitude
     # NB: J=1 is Southernmost point!
-    j = np.arange(1, iy + 1)
+    j = jnp.arange(1, iy + 1)
     jj = il + 1 - j
 
-    sia_half = np.cos(3.141592654 * (j - 0.25) / (il + 0.5))
-    coa_half = np.sqrt(1.0 - sia_half ** 2.0)
+    sia_half = jnp.cos(3.141592654 * (j - 0.25) / (il + 0.5))
+    coa_half = jnp.sqrt(1.0 - sia_half ** 2.0)
 
-    sia = -sia_half
-    sia = np.where(jj > 0, np.concatenate([sia_half, sia_half[::-1]]), sia)
+    sia = jnp.concatenate((-sia_half[jnp.newaxis], sia_half[jnp.newaxis]), axis=0)
+    coa = jnp.concatenate((coa_half[jnp.newaxis], coa_half[jnp.newaxis]), axis=0)
+    radang = jnp.concatenate((-jnp.arcsin(sia_half)[jnp.newaxis], jnp.arcsin(sia_half)[jnp.newaxis]), axis=0)
 
-    coa = coa_half
-    coa = np.where(jj > 0, np.concatenate([coa_half, coa_half[::-1]]), coa)
-
-    radang = -np.arcsin(sia_half)
-    radang = np.where(jj > 0, np.concatenate([radang, radang[::-1]]), radang)
+    cosg = jnp.repeat(coa_half, 2)
+    cosgr = 1. / cosg
+    cosgr2 = 1. / (cosg * cosg)
 
     '''
     # Expand cosine and its reciprocal to cover both hemispheres
@@ -108,17 +106,17 @@ def initialize_geometry(hsg, dhs, fsg, dhsr, fsgr, radang, coriol, sia, coa, sia
 
     # Expand cosine and its reciprocal to cover both hemispheres
     cosg = coa_half
-    cosg = np.where(jj > 0, np.concatenate([cosg, cosg[::-1]]), cosg)
+    cosg = jnp.where(jj > 0, jnp.concatenate([cosg, cosg[::-1]]), cosg)
 
     cosgr = 1. / coa_half
-    cosgr = np.where(jj > 0, np.concatenate([cosgr, cosgr[::-1]]), cosgr)
+    cosgr = jnp.where(jj > 0, jnp.concatenate([cosgr, cosgr[::-1]]), cosgr)
 
     cosgr2 = 1. / (coa_half ** 2)
-    cosgr2 = np.where(jj > 0, np.concatenate([cosgr2, cosgr2[::-1]]), cosgr2)
+    cosgr2 = jnp.where(jj > 0, jnp.concatenate([cosgr2, cosgr2[::-1]]), cosgr2)
 
     coriol = 2.0 * omega * sia
 
     return hsg, dhs, fsg, dhsr, fsgr, radang, coriol, sia, coa, sia_half, coa_half, cosg, cosgr, cosgr2
 
 # Initialize geometry
-initialize_geometry()
+# initialize_geometry(hsg, dhs, fsg, dhsr, fsgr, radang, coriol, sia, coa, sia_half, coa_half, cosg, cosgr, cosgr2)

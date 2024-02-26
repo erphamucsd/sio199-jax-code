@@ -4,7 +4,6 @@ For storing variables used by multiple physics schemes.
 '''
 
 import jax
-import jax.numpy as np
 
 # Model geometry parameters
 trunc = 30 # Spectral truncation total wavenumber
