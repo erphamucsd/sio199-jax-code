@@ -34,8 +34,6 @@ def get_qsat(ta, ps, sig):
     t1 = 35.86
     t2 = 7.66
 
-    qsat = jnp.zeros_like(ta)  # initializing qsat
-
     # Computing qsat for each grid point
     qsat = jnp.where(ta >= t0, e0 * jnp.exp(c1 * (ta - t0) / (ta - t1)), 
                       e0 * jnp.exp(c2 * (ta - t0) / (ta - t2)))
