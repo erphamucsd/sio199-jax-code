@@ -9,9 +9,9 @@ from jax import jit
 from params import kx, il, iy
 from physical_constants import akap, omega
 
+# Initializes all of the model geometry variables.
 @jit
 def initialize_geometry():
-
     # Definition of model levels
     if kx == 5:
         hsg = jnp.array([0.000, 0.150, 0.350, 0.650, 0.900, 1.000])
