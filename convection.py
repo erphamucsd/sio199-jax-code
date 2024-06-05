@@ -5,202 +5,176 @@ version of the Tiedke (1993) mass-flux convection scheme.
 '''
 
 import jax.numpy as jnp
-import jax
-from jax import lax
 
-from speedyf90_types import p
+from physical_constants import p0, alhc, wvi, grav
+from geometry import dhs, fsg
 
-# Constants for convection 
-psmin = jnp.array(0.8, dtype=p) # Minimum (normalised) surface pressure for the occurrence of convection
-trcnv = jnp.array(6.0, dtype=p) # Time of relaxation (in hours) towards reference state
-rhbl = jnp.array(0.9, dtype=p) # Relative humidity threshold in the boundary layer
-rhil = jnp.array(0.7, dtype=p) # Relative humidity threshold in intermeduate layers for secondary mass flux
-entmax = jnp.array(0.5, dtype=p) # Maximum entrainment as a fraction of cloud-base mass flux
-smf = jnp.array(0.8, dtype=p) # Ratio between secondary and primary mass flux at cloud-base
+# Diagnose convectively unstable gridboxes
 
-# Compute convective fluxes of dry static energy and moisture using a simplified mass-flux scheme
-def get_convection_tendencies(psa, se, qa, qsat, itop, cbmf, precnv, dfse, dfqa):
-    from physical_constants import p0, alhc, alhs, wvi, grav
-    from geometry import fsg, dhs
-
-    ix, il, kx = psa.shape  # Assuming psa has shape (ix, il, kx)
-
-    # Initialization of output and workspace arrays
-    nl1 = kx - 1
-    nlp = kx + 1
-    fqmax = 5.0
-
-    fm0 = p0 * dhs[-1] / (grav * trcnv * 3600.0)
-    rdps = 2.0 / (1.0 - psmin)
-
-    dfse = jnp.zeros_like(dfse)
-    dfqa = jnp.zeros_like(dfqa)
-
-    cbmf = jnp.zeros_like(cbmf)
-    precnv = jnp.zeros_like(precnv)
-
-    # Entrainment profile (up to sigma = 0.5)
-    entr = jnp.maximum(0.0, fsg[:, None] - 0.5)**2.0
-    sentr = entmax / jnp.sum(entr[:, :, 1:nl1], axis=-1)
-    entr = jnp.where(jnp.arange(1, kx-1)[:, None] < nl1, entr * sentr[:, None], entr)
-
-    # Check of conditions for convection
-    qdif = diagnose_convection(psa, se, qa, qsat)
-
-    # Create index arrays
-    i_indices = jnp.arange(ix)[:, None]
-    j_indices = jnp.arange(il)[None, :]
-
-    # Define functions for operations within the loop
-    # Convection over selected grid-points
-    def convection_loop(i, j, args):
-        itop_ij = itop[i, j]
-        cbmf_ij = cbmf[i, j]
-
-        # Boundary layer (cloud base)
-        k = kx - 1
-        k1 = k - 1
-
-        # Maximum specific humidity in the PBL
-        qmax = jnp.maximum(1.01 * qa[i, j, k], qsat[i, j, k])
-
-        # Dry static energy and moisture at upper boundary
-        sb = se[i, j, k1] + wvi[k1, 1] * (se[i, j, k] - se[i, j, k1])
-        qb = qa[i, j, k1] + wvi[k1, 1] * (qa[i, j, k] - qa[i, j, k1])
-        qb = jnp.minimum(qb, qa[i, j, k])
-
-        # Cloud-base mass flux
-        fpsa = psa[i, j] * jnp.minimum(1.0, (psa[i, j] - psmin) * rdps)
-        fmass = fm0 * fpsa * jnp.minimum(fqmax, qdif[i, j] / (qmax - qb))
-
-        # Upward fluxes at upper boundary
-        fus = fmass * se[i, j, k]
-        fuq = fmass * qmax
-
-        # Downward fluxes at upper boundary
-        fds = fmass * sb
-        fdq = fmass * qb
-
-        # Net flux of dry static energy and moisture
-        dfse = fds - fus
-        dfqa = fdq - fuq
-
-        # Intermediate layers (entrainment)
-        def intermediate_layers(k, fse_fqa):
-            k1 = k - 1
-
-            # Fluxes at lower boundary
-            dfse = fse_fqa[0]
-            dfqa = fse_fqa[1]
-
-            # Mass entrainment
-            enmass = entr[k] * psa[i, j] * cbmf_ij
-            fmass += enmass
-
-            # Upward fluxes at upper boundary
-            fus += enmass * se[i, j, k]
-            fuq += enmass * qa[i, j, k]
-
-            # Downward fluxes at upper boundary
-            sb = se[i, j, k1] + wvi[k1, 1] * (se[i, j, k] - se[i, j, k1])
-            qb = qa[i, j, k1] + wvi[k1, 1] * (qa[i, j, k] - qa[i, j, k1])
-            fds = fmass * sb
-            fdq = fmass * qb
-
-            # Net flux of dry static energy and moisture
-            dfse += fds - fus
-            dfqa += fdq - fuq
-
-            # Secondary moisture flux
-            delq = rhil * qsat[i, j, k] - qa[i, j, k]
-            if delq > 0.0:
-                fsq = smf * cbmf_ij * delq
-                dfqa += fsq
-                dfqa += -fsq
-
-            return dfse, dfqa
-
-        # Perform loop for intermediate layers
-        dfse, dfqa = lax.fori_loop(kx - 2, itop_ij, intermediate_layers, (dfse, dfqa))
-
-        # Top layer (condensation and detrainment)
-        k = itop_ij
-
-        # Flux of convective precipitation
-        qsatb = qsat[i, j, k] + wvi[k, 1] * (qsat[i, j, k+1] - qsat[i, j, k])
-        precnv_ij = jnp.maximum(fuq - fmass * qsatb, 0.0)
-
-        # Net flux of dry static energy and moisture
-        dfse += fus - fds + alhc * precnv_ij
-        dfqa += fuq - fdq - precnv_ij
-
-        return dfse, dfqa, precnv.at[i, j].set(precnv_ij)
-
-    # Perform loop over indices
-    dfse, dfqa, precnv = lax.fori_loop(ix, lambda i, args: lax.fori_loop(il, lambda j, args: convection_loop(i, j, args), args), (dfse, dfqa, precnv))
-
-    return dfse, dfqa
-
+# Convection is activated in gridboxes with conditional instability. This
+# is diagnosed by checking for any tropopsheric half level where the
+# saturation moist static energy is lower than in the boundary-layer level.
+# In gridboxes where this is true, convection is activated if either: there
+# is convective instability - the actual moist static energy at the
+# tropospheric level is lower than in the boundary-layer level, or, the
+# relative humidity in the boundary-layer level and lowest tropospheric
+# level exceed a set threshold (rhbl).
 def diagnose_convection(psa, se, qa, qsat):
-    from physical_constants import alhc, wvi
-    # Constants
-    ix, il, kx = psa.shape
+    ix, il, kx = se.shape
+    itop = jnp.full((ix, il), kx + 1, dtype=int)  # Initialize itop with nlp
+    qdif = jnp.zeros((ix, il), dtype=float)
 
-    # Initialize arrays
-    itop = jnp.full((ix, il), kx+1, dtype=jnp.int32)
-    qdif = jnp.zeros((ix, il), dtype=psa.dtype)
+    psmin = jnp.array(0.8) # Minimum (normalised) surface pressure for the occurrence of convection
+    rhbl = jnp.array(0.9) # Relative humidity threshold in the boundary layer
 
     # Saturation moist static energy
-    mss = jnp.maximum.outer(se[..., kx-1] + alhc * qa[..., kx-1], jnp.max(se[..., :-1] + alhc * qsat[..., :-1], axis=-1))
+    mss = se + alhc * qsat
 
     rlhc = 1.0 / alhc
 
-    # Find indices where pressure is greater than psmin
-    idx = jnp.where(psa > psmin)
+    # Minimum of moist static energy in the lowest two levels
+    # Mask for psa > psmin
+    mask_psa = psa > psmin 
 
-    def loop_body(ij, itop, qdif):
-        i, j = ij
+    mse0 = jnp.where(mask_psa, 0, se[:, :, kx-1] + alhc * qa[:, :, kx-1]) #se[:, :, kx-1] + alhc * qa[:, :, kx-1]
+    mse1 = jnp.where(mask_psa, 0, se[:, :, kx-2] + alhc * qa[:, :, kx-2]) #se[:, :, kx-2] + alhc * qa[:, :, kx-2]
+    mse1 = jnp.minimum(mse0, mse1)
 
-        mse0 = se[i, j, kx-1] + alhc * qa[i, j, kx-1]
-        mse1 = se[i, j, kx-2] + alhc * qa[i, j, kx-2]
-        mse1 = jnp.minimum(mse0, mse1)
+    # Saturation (or super-saturated) moist static energy in PBL
+    mss0 = jnp.maximum(mse0, mss[:, :, kx-1])
 
-        mss0 = jnp.maximum(mse0, mss[i, j, kx-1])
+    # Compute mss2 array for all k layers (3 to kx-3)
+    k_indices = jnp.arange(3, kx-3, dtype=int)
+    mss2 = mss[:, :, k_indices] + wvi[k_indices, 1] * (mss[:, :, k_indices + 1] - mss[:, :, k_indices])
+    
+    # Check 1: conditional instability (MSS in PBL > MSS at top level)
+    mask_conditional_instability = mss0[:, :, None] > mss2
+    ktop1 = jnp.full((ix, il), kx, dtype=int)
+    ktop1 = k_indices[jnp.argmax(mask_conditional_instability, axis=2)]
 
-        ktop1 = kx
-        ktop2 = kx
+    # Check 2: gradient of actual moist static energy between lower and upper 
+    # troposphere
+    mask_mse1_greater_mss2 = mse1[:, :, None] > mss2
+    ktop2 = jnp.full((ix, il), kx, dtype=int)
+    ktop2 = k_indices[jnp.argmax(mask_mse1_greater_mss2, axis=2)]
+    msthr = jnp.zeros((ix, il), dtype=float)
+    msthr = mss2[jnp.arange(ix)[:, None], jnp.arange(il), jnp.argmax(mask_mse1_greater_mss2, axis=2)]
 
-        def cond_body(k, state):
-            mss2, ktop1, ktop2 = state
-            mss2 = mss[i, j, k] + wvi[k, 1] * (mss2 - mss[i, j, k])
-            
-            ktop1 = lax.cond(mss0 > mss2, lambda _: k, lambda _: ktop1, None)
-            ktop2 = lax.cond(mse1 > mss2, lambda _: k, lambda _: ktop2, None)
-            
-            return mss2, ktop1, ktop2
+    # Check 3: RH > RH_c at both k=kx and k=kx-1
+    qthr0 = rhbl * qsat[:, :, kx-1]
+    qthr1 = rhbl * qsat[:, :, kx-2]
+    lqthr = (qa[:, :, kx-1] > qthr0) & (qa[:, :, kx-2] > qthr1)
 
-        _, ktop1, ktop2 = lax.scan(cond_body, kx-4, (mss[i, j, kx-2], ktop1, ktop2))
+    # Applying masks to itop and qdif
+    mask_ktop1_less_kx = ktop1 < kx
+    mask_ktop2_less_kx = ktop2 < kx
 
-        def check3(ktop1, ktop2, itop, qdif):
-            qthr0 = rhbl * qsat[i, j, kx-1]
-            qthr1 = rhbl * qsat[i, j, kx-2]
-            lqthr = (qa[i, j, kx-1] > qthr0) & (qa[i, j, kx-2] > qthr1)
+    combined_mask1 = mask_ktop1_less_kx & mask_ktop2_less_kx
+    itop = jnp.where(combined_mask1, ktop1, itop)
+    qdif = jnp.where(combined_mask1, jnp.maximum(qa[:, :, kx-1] - qthr0, (mse0 - msthr) * rlhc), qdif)
 
-            if ktop2 < kx:
-                itop = jax.ops.index_update(itop, (i, j), ktop1)
-                qdif = jax.ops.index_update(qdif, (i, j), jnp.maximum(qa[i, j, kx-1] - qthr0, (mse0 - mss[i, j, ktop2]) * rlhc))
-            elif lqthr:
-                itop = jax.ops.index_update(itop, (i, j), ktop1)
-                qdif = jax.ops.index_update(qdif, (i, j), qa[i, j, kx-1] - qthr0)
-
-            return itop, qdif
-
-        itop, qdif = lax.cond(ktop1 < kx, lambda _: check3(ktop1, ktop2, itop, qdif), lambda _: (itop, qdif), None)
-
-        return itop, qdif
-
-    # Loop over valid indices
-    itop, qdif = lax.scan(loop_body, idx, (itop, qdif))
+    combined_mask2 = mask_ktop1_less_kx & lqthr & ~combined_mask1
+    itop = jnp.where(combined_mask2, ktop1, itop)
+    qdif = jnp.where(combined_mask2, qa[:, :, kx-1] - qthr0, qdif)
 
     return itop, qdif
 
+# Compute convective fluxes of dry static energy and moisture using a
+# simplified mass-flux scheme.
+def get_convection_tendencies(psa, se, qa, qsat, itop, cbmf, precnv, dfse, dfqa):
+    _, _, kx = se.shape
+
+    # 1. Initialization of output and workspace arrays
+    psmin = jnp.array(0.8) # Minimum (normalised) surface pressure for the occurrence of convection
+    trcnv = jnp.array(6.0) # Time of relaxation (in hours) towards reference state
+    rhil = jnp.array(0.7) # Relative humidity threshold in intermeduate layers for secondary mass flux
+    entmax = jnp.array(0.5) # Maximum entrainment as a fraction of cloud-base mass flux
+    smf = jnp.array(0.8) # Ratio between secondary and primary mass flux at cloud-base
+
+    # Entrainment profile (up to sigma = 0.5)
+    entr = jnp.maximum(0.0, fsg[1:kx-1] - 0.5)**2.0
+    sentr = jnp.sum(entr)
+    entr *= entmax / sentr
+
+    # 2. Check of conditions for convection
+    itop, qdif = diagnose_convection(psa, se, qa, qsat)
+
+    # 3. Convection over selected grid-points
+    # 3.1 Boundary layer (cloud base)
+    # Maximum specific humidity in the PBL
+    mask = itop < kx
+    qmax = jnp.maximum(1.01 * qa[:, :, -1], qsat[:, :, -1])
+
+    # Dry static energy and moisture at upper boundary
+    sb = se[:, :, -2] + wvi[-2, 1] * (se[:, :, -1] - se[:, :, -2])
+    qb = jnp.minimum(qa[:, :, -2] + wvi[-2, 1] * (qa[:, :, -1] - qa[:, :, -2]), qa[:, :, -1])
+
+    # Cloud-base mass flux, computed to satisfy:
+    # fmass*(qmax-qb)*(g/dp)=qdif/trcnv
+    fqmax = 5.0
+    fm0 = p0 * dhs[-1] / (grav * trcnv * 3600.0)
+    rdps = 2.0 / (1.0 - psmin)
+
+    fpsa = psa * jnp.minimum(1.0, (psa - psmin) * rdps)
+    fmass = fm0 * fpsa * jnp.minimum(fqmax, qdif / (qmax - qb))
+    cbmf = jnp.where(mask, fmass, cbmf)
+
+    # Upward fluxes at upper boundary
+    fus = fmass * se[:, :, -1]
+    fuq = fmass * qmax
+
+    # Downward fluxes at upper boundary
+    fds = fmass * sb
+    fdq = fmass * qb
+
+    # Net flux of dry static energy and moisture
+    dfse = dfse.at[:, :, -1].set(fds - fus)
+    dfqa = dfqa.at[:, :, -1].set(fdq - fuq)
+
+    # Create an array of k values to use for broadcasting
+    k_vals = jnp.arange(kx-2, 0, -1)
+
+    # Initialize fmass, fus, and fuq arrays for broadcasting
+    fmass_broadcast = jnp.tile(fmass[:, :, jnp.newaxis], (1, 1, len(k_vals)))
+    fus_broadcast = jnp.tile(fus[:, :, jnp.newaxis], (1, 1, len(k_vals)))
+    fuq_broadcast = jnp.tile(fuq[:, :, jnp.newaxis], (1, 1, len(k_vals)))
+
+    # Calculate sb and qb for each layer in the loop using broadcasting
+    sb_vals = se[:, :, k_vals-1] + wvi[k_vals-1, 1] * (se[:, :, k_vals] - se[:, :, k_vals-1])
+    qb_vals = qa[:, :, k_vals-1] + wvi[k_vals-1, 1] * (qa[:, :, k_vals] - qa[:, :, k_vals-1])
+
+    # Mass entrainment
+    enmass = entr[k_vals-1] * psa[:, :, jnp.newaxis] * cbmf[:, :, jnp.newaxis]
+
+    # Upward fluxes at upper boundary
+    fmass_broadcast += enmass
+    fus_broadcast += enmass * se[:, :, k_vals]
+    fuq_broadcast += enmass * qa[:, :, k_vals]
+
+    # Downward fluxes at upper boundary
+    fds_vals = fmass_broadcast * sb_vals
+    fdq_vals = fmass_broadcast * qb_vals
+
+    # Net flux of dry static energy and moisture
+    dfse = dfse.at[:, :, k_vals].set(fus_broadcast - fds_vals)
+    dfqa = dfqa.at[:, :, k_vals].set(fuq_broadcast - fdq_vals)
+
+    # Secondary moisture flux
+    delq_vals = rhil * qsat[:, :, k_vals] - qa[:, :, k_vals]
+    fsq_vals = jnp.where(delq_vals > 0, smf * cbmf[:, :, jnp.newaxis] * delq_vals, 0.0)
+
+    dfqa = dfqa.at[:, :, k_vals].add(fsq_vals)
+    dfqa = dfqa.at[:, :, -1].add(-jnp.sum(fsq_vals, axis=-1))
+
+    # 3.3 Top layer (condensation and detrainment)
+    k = itop
+
+    # Flux of convective precipitation
+    qsatb = qsat[:, :, k] + wvi[k, 1] *(qsat[:, :, k+1]-qsat[:, :, k])
+    precnv = jnp.where(mask, jnp.maximum(fuq - fmass * qsatb, 0.0), precnv)
+
+    # Net flux of dry static energy and moisture
+    dfse = fus - fds + alhc * precnv
+    dfqa = fuq - fdq - precnv
+
+    return dfse, dfqa, cbmf, precnv
