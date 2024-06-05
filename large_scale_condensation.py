@@ -4,9 +4,8 @@ Parametrization of large-scale condensation.
 '''
 
 import jax.numpy as jnp
-from jax import jit
 
-from physical_constants import p0, cp, alhc, alhs, grav
+from physical_constants import p0, cp, alhc, grav
 from geometry import fsg, dhs
 
 # Constants for large-scale condensation
@@ -18,7 +17,7 @@ rhblsc = 0.95 # Relative humidity threshold for boundary layer
 # Compute large-scale condensation and associated tendencies of temperature and 
 # moisture
 def get_large_scale_condensation_tendencies(psa, qa, qsat, itop):
-    ix, il, kx = qa.shape
+    ix, il, _ = qa.shape
 
     # 1. Initialization
 
