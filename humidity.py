@@ -6,9 +6,6 @@ saturation specific humidity.
 
 import jax.numpy as jnp
 
-from speedyf90_types import p
-from params import ix, il
-
 # Converts specific humidity to relative humidity, and also returns saturation 
 # specific humidity.
 def spec_hum_to_rel_hum(ta, ps, sig, qa):
